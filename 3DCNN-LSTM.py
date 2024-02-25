@@ -12,15 +12,16 @@ class CNNLSTM(nn.Module):
     def __init__(self):
         # TODO:: code style can make conv blocks
         super(CNNLSTM, self).__init__()
-        self.maxpool = nn.MaxPool3d(2) 
-        self.dropout = nn.Dropout3d(0.5) # TODO: strides
         self.conv1 = nn.Conv3d(1, 32, 3)# check input layers isn't it 40?
         self.conv2 = nn.Conv3d(32, 64, 3) # 0 padding?
         self.conv3 = nn.Conv3d(64, 128, 3) # TODO: initialize weights
 
         nn.init.xavier_uniform(self.conv1.weight) #???
 
-        self.lstm = nn.LSTM()
+        self.maxpool = nn.MaxPool3d(2) 
+        self.dropout = nn.Dropout3d(0.5) # TODO: strides
+
+        self.lstm = nn.LSTM(128, 128, batch_first=True) # what should the sizes be
 
         self.bn1 = nn.BatchNorm3d(32)
         self.bn2 = nn.BatchNorm3d(64)
@@ -37,7 +38,7 @@ class CNNLSTM(nn.Module):
         out = self.dropout(self.maxpool(out))
 
         # TODO: reshape
-        x = x.view(x.size(0), -1) # 128 x 36
+        x = x.view(x.size(0), 128, 36) # 128 x 36
         out = self.dropout(out)
         out, _ = self.lstm(out)
         return out
