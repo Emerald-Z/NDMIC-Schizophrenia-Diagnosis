@@ -23,7 +23,7 @@ class CNNLSTM(nn.Module):
         self.maxpool = nn.MaxPool3d(2) 
         self.dropout = nn.Dropout3d(0.5)
 
-        self.lstm = nn.LSTM(128, 128, batch_first=True) # what should the sizes be
+        self.lstm = nn.LSTM(128, 36, batch_first=True) # what should the sizes be
 
         self.bn1 = nn.BatchNorm3d(32)
         self.bn2 = nn.BatchNorm3d(64)
@@ -40,7 +40,7 @@ class CNNLSTM(nn.Module):
         out = self.dropout(self.maxpool(out))
 
         # TODO: reshape
-        x = x.view(x.size(0), 128, 36) # 128 x 36
+        x = x.view(x.size(0), 128, 36, -1) # 128 x 36
         out = self.dropout(out)
         out, _ = self.lstm(out)
         return out
