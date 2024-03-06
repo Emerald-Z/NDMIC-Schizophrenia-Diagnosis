@@ -56,16 +56,19 @@ BATCH_SIZE=16
 
 # create dataloader
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+    
+# STEP 1: training on full dataset
+def train(model, device, dataloader, optimizer, criterion, N_EPOCHS):
+    model.train()
+    for epoch in range(N_EPOCHS):
+        for id_batch, (x_batch, y_batch) in enumerate(dataloader):
 
-for epoch in range(N_EPOCHS):
-    for id_batch, (x_batch, y_batch) in enumerate(dataloader):
+            y_pred = model(x_batch)
+            loss = criterion(y_pred, y_batch)
 
-        y_pred = model(x_batch)
-        loss = criterion(y_pred, y_batch)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        if id_batch % 100 == 0:
-            print()
+            if id_batch % 100 == 0:
+                print()
