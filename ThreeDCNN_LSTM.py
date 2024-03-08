@@ -46,8 +46,9 @@ class CNNLSTM(nn.Module):
         return out
 
 # can move this to another file
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-model = CNNLSTM()
+model = CNNLSTM().to(device)
 criterion = nn.CrossEntropyLoss(); # TODO: no idea
 optimizer = optim.Adam(model.parameters(), lr=0.0005)
 
@@ -58,11 +59,11 @@ BATCH_SIZE=16
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
 # STEP 1: training on full dataset
-def train(model, device, dataloader, optimizer, criterion, N_EPOCHS):
+def train(model, device, dataloader, optimizer, criterion, n_epochs):
     model.train()
-    for epoch in range(N_EPOCHS):
+    for epoch in range(n_epochs):
         for id_batch, (x_batch, y_batch) in enumerate(dataloader):
-
+            x_batch, y_batch = x_batch.to(device), y_batch.to(device)
             y_pred = model(x_batch)
             loss = criterion(y_pred, y_batch)
 
@@ -72,3 +73,4 @@ def train(model, device, dataloader, optimizer, criterion, N_EPOCHS):
 
             if id_batch % 100 == 0:
                 print()
+        
