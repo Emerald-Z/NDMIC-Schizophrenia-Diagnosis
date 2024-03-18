@@ -118,8 +118,7 @@ def train_model(model, criterion, optimizer, train_loader, val_loader,
         epoch_loss = running_loss / size
         epoch_acc = running_corrects.double() / size
 
-        print(f'Epoch {epoch+1}/{num_epochs} - Training Loss: {epoch_loss:.4f}, 
-              Acc: {epoch_acc:.4f}')
+        print(f'Epoch {epoch+1}/{num_epochs} - Training Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}')
 
         # Call eval loop for validation
         eval_model(model, criterion, val_loader)
