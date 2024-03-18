@@ -12,7 +12,6 @@ from scipy.ndimage import zoom
 '''
 class CNNLSTM(nn.Module):
     def __init__(self):
-        # TODO:: code style can make conv blocks
         super(CNNLSTM, self).__init__()
         self.conv1 = nn.Conv3d(1, 32, 3)# check input layers isn't it 40???
         self.conv2 = nn.Conv3d(32, 64, 3) 
@@ -71,13 +70,14 @@ BATCH_SIZE=16
 #dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
     
 # STEP 1: training on full dataset
-def train(model, device, dataloader, optimizer, criterion, n_epochs):
+def train(model, device, dataloader, optimizer, criterion, n_epochs, save=True):
     model.train()
     for epoch in range(n_epochs):
         print("\nEpoch:", epoch)
         for id_batch, (x_batch, y_batch) in enumerate(dataloader):
+            if id_batch in [70, 83]:
+                continue
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-            print("Batch labels:", y_batch)
             x_batch = x_batch.unsqueeze(1)
             y_pred = model(x_batch)
             loss = criterion(y_pred, y_batch)
@@ -85,4 +85,6 @@ def train(model, device, dataloader, optimizer, criterion, n_epochs):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+    if save:
+        torch.save(model.state_dict(), 'model_checkpoint_e')
         
