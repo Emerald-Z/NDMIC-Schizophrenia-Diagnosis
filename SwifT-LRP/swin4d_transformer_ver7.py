@@ -264,7 +264,7 @@ class WindowAttention4D(nn.Module):
 
         self.save_attn(attn)
         if self.train and x.requires_grad:
-            attn.register_hook(self.save_attn_gradients)
+            attn.register_hook(self.save_attn_gradients) #?????
 
         x = self.matmul2([attn, v])
         x = x.transpose(1, 2).reshape(b_, n, c)
@@ -273,26 +273,31 @@ class WindowAttention4D(nn.Module):
         return x
     
     def relprop(self, cam, mask, **kwargs): #TODO: make sure relprop that takes this also has a mask
-        cam = self.proj_drop.relprop(cam)
-        cam = self.proj.relprop(cam)
-        (cam_1, cam_v) = self.matmul2.relprop(cam)
+        # shape the same as from the input of forward
+        b_, n, c = cam.shape
+        cam = self.proj_drop.relprop(cam, **kwargs)
+        cam = self.proj.relprop(cam, **kwargs)
+        # Tentative reshape?
+        cam = cam.reshape(b_, n, self.num_heads, c // self.num_heads).transpose(1, 2)
+        (cam_1, cam_v) = self.matmul2.relprop(cam, **kwargs)
 
         # unscale and save
-        cam_1 /= 2
-        cam_v /= 2
+        # cam_1 /= 2
+        # cam_v /= 2
 
         self.save_v_cam(cam_v)
         self.save_attn_cam(cam_1)
 
         # first reshape, transpose(2, 1) undo matrix multiplication
         if mask is not None:
-            cam_1 = self.softmax.relprop(cam_1)
+            cam_1 = self.softmax.relprop(cam_1, **kwargs)
             cam_1 = cam_1.view()
+            cam_1 = cam_1 - mask.squeeze(0).squeeze(1).to(cam.dtype)
             cam_1 = cam_1.view()
         else:
-            cam_1 = self.softmax.relprop(cam_1)
-        cam = self.attn_drop.relprop(cam)
-        (cam_q, cam_k) = self.matmul1.relprop(cam) # rewrite @ to use einsum like in translrp
+            cam_1 = self.softmax.relprop(cam_1, **kwargs)
+        cam = self.attn_drop.relprop(cam_1, **kwargs)
+        (cam_q, cam_k) = self.matmul1.relprop(cam, **kwargs) # rewrite @ to use einsum like in translrp
         # unscale
         # reshape
         cam_q /= 2
@@ -368,15 +373,23 @@ class SwinTransformerBlock4D(nn.Module):
     def forward_part1(self, x, mask_matrix):
         b, d, h, w, t, c = x.shape
         window_size, shift_size = get_window_size((d, h, w, t), self.window_size, self.shift_size)
+        
+        # Apply norm1
         x = self.norm1(x)
+        
+        # Pad the input if necessary
         pad_d0 = pad_h0 = pad_w0 = pad_t0 = 0
-        pad_d1 = (window_size[0] - d % window_size[0]) % window_size[0]
-        pad_h1 = (window_size[1] - h % window_size[1]) % window_size[1]
-        pad_w1 = (window_size[2] - w % window_size[2]) % window_size[2]
-        pad_t1 = (window_size[3] - t % window_size[3]) % window_size[3]
-        x = F.pad(x, (0, 0, pad_t0, pad_t1, pad_w0, pad_w1, pad_h0, pad_h1, pad_d0, pad_d1))  # last tuple first in
+        self.pad_d1 = (window_size[0] - d % window_size[0]) % window_size[0]
+        self.pad_h1 = (window_size[1] - h % window_size[1]) % window_size[1]
+        self.pad_w1 = (window_size[2] - w % window_size[2]) % window_size[2]
+        self.pad_t1 = (window_size[3] - t % window_size[3]) % window_size[3]
+        x = F.pad(x, (0, 0, pad_t0, self.pad_t1, pad_w0, self.pad_w1, pad_h0, self.pad_h1, pad_d0, self.pad_d1))  # last tuple first in
+        
+        # Store padded dimensions
         _, dp, hp, wp, tp, _ = x.shape
         dims = [b, dp, hp, wp, tp]
+        
+        # Shift the input if necessary
         if any(i > 0 for i in shift_size):
             shifted_x = torch.roll(
                 x, shifts=(-shift_size[0], -shift_size[1], -shift_size[2], -shift_size[3]), dims=(1, 2, 3, 4)
@@ -385,41 +398,105 @@ class SwinTransformerBlock4D(nn.Module):
         else:
             shifted_x = x
             attn_mask = None
+        
+        # Partition windows
         x_windows = window_partition(shifted_x, window_size)
+        
+        # Perform self-attention
         attn_windows = self.attn(x_windows, mask=attn_mask)
+        
+        # Merge windows
         attn_windows = attn_windows.view(-1, *(window_size + (c,)))
         shifted_x = window_reverse(attn_windows, window_size, dims)
+        
+        # Reverse cyclic shift
         if any(i > 0 for i in shift_size):
             x = torch.roll(
                 shifted_x, shifts=(shift_size[0], shift_size[1], shift_size[2], shift_size[3]), dims=(1, 2, 3, 4)
             )
         else:
             x = shifted_x
-
-        if pad_d1 > 0 or pad_h1 > 0 or pad_w1 > 0 or pad_t1 > 0:
+        
+        # Remove padding
+        if self.pad_d1 > 0 or self.pad_h1 > 0 or self.pad_w1 > 0 or self.pad_t1 > 0:
             x = x[:, :d, :h, :w, :t, :].contiguous()
-
+        
         return x
 
     def forward_part2(self, x):
-        x = self.drop_path(self.mlp(self.norm2(x)))
+        # Apply norm2
+        x = self.norm2(x)
+
+        # Apply MLP
+        x = self.mlp(x)
+
+        # Apply stochastic depth
+        x = self.drop_path(x)
+
         return x
 
     def forward(self, x, mask_matrix):
-        shortcut = x
+        shortcut = x # For residual
         if self.use_checkpoint:
             x = checkpoint.checkpoint(self.forward_part1, x, mask_matrix)
         else:
             x = self.forward_part1(x, mask_matrix)
+            
+        # Add residual connection
         x = shortcut + self.drop_path(x)
+        
+        
         if self.use_checkpoint:
             x = x + checkpoint.checkpoint(self.forward_part2, x)
         else:
             x = x + self.forward_part2(x)
         return x
     
-    def relprop(self, cam, **kwargs):
-        pass
+    def relprop(self, cam, mask_matrix, **kwargs):
+        cam = rearrange(cam, "b d h w t c -> b c d h w t")
+        
+        # Undo dropout and add residual connection
+        if self.use_checkpoint:
+            # cam = cam + checkpoint.checkpoint(self.forward_part2, cam)
+            print("I'm going to lose it!" * 10000)
+        else:
+            #cam_2 = self.drop_path.relprop(cam, **kwargs) #TODO: WHERE THE SOURCE CODEE!!!!
+            cam_2 = self.mlp.relprop(cam, **kwargs)
+            cam_2 = self.norm2.relprop(cam, **kwargs)
+            cam -= cam_2
+ 
+        # Add residual connection
+        shortcut = cam
+
+        # Undo shift window and window partition
+        """if self.use_checkpoint:
+            cam = checkpoint.checkpoint(self.forward_part1, cam, mask_matrix)
+        else:
+            cam = self.forward_part1(cam, mask_matrix)"""
+
+        if self.pad_d1 > 0 or self.pad_h1 > 0 or self.pad_w1 > 0 or self.pad_t1 > 0:
+            cam = cam[:, :, :self.d, :self.h, :self.w, :self.t].contiguous()
+
+        if any(i > 0 for i in self.shift_size):
+            cam = window_reverse(cam, self.window_size, self.dims)
+            cam = torch.roll(
+                cam, shifts=(self.shift_size[0], self.shift_size[1], self.shift_size[2], self.shift_size[3]), dims=(1, 2, 3, 4)
+            )
+        else:
+            cam = window_reverse(cam, self.window_size, self.dims)
+
+        # Undo window partition and attention
+        cam = rearrange(cam, "b d h w t c -> b c d h w t")
+        cam = self.attn.relprop(cam, mask=mask_matrix, **kwargs)
+        cam = rearrange(cam, "b c d h w t -> b d h w t c")
+
+        # Add residual connection
+        cam = cam + shortcut
+
+        # Undo norm1
+        cam = self.norm1.relprop(cam, **kwargs)
+
+        return cam
 
 
 class PatchMergingV2(nn.Module):
@@ -455,6 +532,7 @@ class PatchMergingV2(nn.Module):
     def forward(self, x):
         x_shape = x.size()
         b, d, h, w, t, c = x_shape
+        self.save_full_data(x)
         x = torch.cat(
             [x[:, i::2, j::2, k::2, :, :] for i, j, k in itertools.product(range(2), range(2), range(2))],
             -1,
@@ -466,10 +544,8 @@ class PatchMergingV2(nn.Module):
         return x
     
     def relprop(self, cam, **kwargs):
-        cam = self.reduction.relprop(cam) 
-        cam = self.norm.relprop(cam)
-        # TODO: Problem - the original operation downsamples, so idk how to fully restore the info
-        # i've found no literature on this, so we can either save the original value or we can upsample with lost info
+        cam = self.reduction.relprop(cam, **kwargs) 
+        cam = self.norm.relprop(cam, **kwargs)
         cam = self.full_data
         return cam
 
@@ -578,6 +654,10 @@ class BasicLayer(nn.Module):
             self.downsample = downsample(
                 dim=dim, norm_layer=norm_layer, spatial_dims=len(self.window_size), c_multiplier=c_multiplier
             )
+        self.attn_mask = None
+
+    def save_attn_mask(self, attn_mask):
+        self.attn_mask = attn_mask
 
     def forward(self, x):
         b, c, d, h, w, t = x.size()
@@ -588,6 +668,7 @@ class BasicLayer(nn.Module):
         wp = int(np.ceil(w / window_size[2])) * window_size[2]
         tp = int(np.ceil(t / window_size[3])) * window_size[3]
         attn_mask = compute_mask([dp, hp, wp, tp], window_size, shift_size, x.device)
+        self.save_attn_mask(attn_mask)
         for blk in self.blocks:
             x = blk(x, attn_mask)
         x = x.view(b, d, h, w, t, -1)
@@ -597,9 +678,37 @@ class BasicLayer(nn.Module):
 
         return x
     
-    def relprop(self, cam, **kwargs):
+    def relprop(self, cam, start_layer=0, **kwargs):
+        b, c, d, h, w, t = cam.size()
         # TODO: only difference here is that an attn_mask is computed for patch merging
-        pass
+                # undo rearrange
+        cam = rearrange(cam, "b c d h w t -> b d h w t c")
+        # downsample relprop
+        # if self.downsample is not None: 
+        #     cam = self.downsample.relprop(x) # TODO: write this -> should be None
+        cam = cam.view(b, d, h, w, t, -1) # TODO: i think this is just to enforce that the shape - print out is the same after view
+        # TODO: BLOCKS!!!!!!! examples are in ViT_LRP, there are different baselines go to imagenet_seg_eval, we can probably steal their best performing relprop
+        # paper doesn't say much tho - probalby should spend some time understandign the differences
+        for blk in reversed(self.blocks):
+            cam = blk.relprop(cam, self.attn_mask, **kwargs)
+        
+        cams = []
+        for blk in self.blocks:
+            grad = blk.attn.get_attn_gradients() # need to write attention mechanism to use this -> blk.attn
+            cam = blk.attn.get_attn_cam()
+            cam = cam[0].reshape(-1, cam.shape[-1], cam.shape[-1])
+            grad = grad[0].reshape(-1, grad.shape[-1], grad.shape[-1])
+            cam = grad * cam
+            cam = cam.clamp(min=0).mean(dim=0)
+            cams.append(cam.unsqueeze(0))
+
+        rollout = compute_rollout_attention(cams, start_layer=start_layer)
+        cam = rollout[:, 0, 1:]
+        rollout = compute_rollout_attention(cams, start_layer=start_layer) # TODO: i have no idea what this is doing
+        cam = rollout[:, 0, 1:]
+
+        cam = rearrange(cam, "b d h w t c -> b c d h w t")
+        return cam
 
 
 # Basic layer for full attention,
@@ -693,17 +802,20 @@ class BasicLayer_FullAttention(nn.Module):
 
         return x
     
-    def relprop(self, cam, **kwargs):
+    def relprop(self, cam, start_layer=0, **kwargs):
+        b, c, d, h, w, t = cam.size()
+
         # undo rearrange
         cam = rearrange(cam, "b c d h w t -> b d h w t c")
         # downsample relprop
         # if self.downsample is not None: 
         #     cam = self.downsample.relprop(x) # TODO: write this -> should be None
-        cam = cam.view() # figure this out
-        # TODO: BLOCKS!!!!!!! examples are in ViT_LRP, there are different baselines go to imagenet_seg_eval, we can probably steal their best performing relprop
-        # paper doesn't say much tho - probalby should spend some time understandign the differences
+        cam = cam.view(b, d, h, w, t, -1) # figure this out
         cams = []
         # TODO: unmodified code below
+        for blk in reversed(self.blocks):
+            blk.relprop(cam, **kwargs)
+        
         for blk in self.blocks:
             grad = blk.attn.get_attn_gradients() # need to write attention mechanism to use this -> blk.attn
             cam = blk.attn.get_attn_cam()
@@ -972,7 +1084,7 @@ class SwinTransformer4D(nn.Module):
 
         for i in range(self.num_layers):
             x = self.pos_embeds[i](x)
-            x = self.layers[i](x.contiguous()) # TODO: what is x contiguous
+            x = self.layers[i](x.contiguous())
 
         # moved this part to clf_mlp or reg_mlp
 
@@ -987,8 +1099,8 @@ class SwinTransformer4D(nn.Module):
     def relprop(self, cam, **kwargs):
         # TODO: what is this doing
         for i in range(self.num_layers, -1):
-            cam = self.layers[i].relprop(cam) # TODO: idk how to reverse contiguous should'nt change contents but idk
-            cam = self.pos_embeds[i].relprop(cam)
-        cam = self.pos_drop.relprop(cam)
-        cam = self.patch_embed.relprop(cam) # TODO: isn't this essentially just taking the first layer...
+            cam = self.layers[i].relprop(cam, **kwargs) 
+            cam = self.pos_embeds[i].relprop(cam, **kwargs)
+        cam = self.pos_drop.relprop(cam, **kwargs)
+        cam = self.patch_embed.relprop(cam, **kwargs)
         pass

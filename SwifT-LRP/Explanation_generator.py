@@ -3,6 +3,9 @@ import torch
 import numpy as np
 from numpy import *
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f'Device: {device}')
+
 # compute rollout between attention layers
 def compute_rollout_attention(all_layer_matrices, start_layer=0):
     # adding residual consideration- code adapted from https://github.com/samiraabnar/attention_flow
@@ -22,7 +25,8 @@ class LRP:
         self.model = model
         self.model.eval()
 
-    def generate_LRP(self, input, index=None, method="transformer_attribution", is_ablation=False, start_layer=0):
+    # Ablation is the removal of different layers to test their impact on the model
+    def generate_LRP(self, input, index=None, is_ablation=False, start_layer=0):
         output = self.model(input)
         kwargs = {"alpha": 1}
         if index == None:
@@ -37,10 +41,16 @@ class LRP:
         self.model.zero_grad()
         one_hot.backward(retain_graph=True)
 
-        return self.model.relprop(torch.tensor(one_hot_vector).to(input.device), method=method, is_ablation=is_ablation,
+        return self.model.relprop(torch.tensor(one_hot_vector).to(input.device), is_ablation=is_ablation,
                                   start_layer=start_layer, **kwargs)
 
+#from pl_classifier import LitClassifier
+#model = LitClassifier.load_from_checkpoint('SwiFT/output/default/last.ckpt')
+#model_checkpoint = (None).to(device) # Saved model checkpoint TODO replace None
+#model_input = None # The fmri
 
+#fmri_lrp = LRP(model)
+#lrp = fmri_lrp.relprop(model_input)
 
 class Baselines:
     def __init__(self, model):
