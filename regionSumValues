@@ -1,0 +1,47 @@
+import xml.etree.ElementTree as ET
+import numpy as np
+import nibabel as nib
+
+# Load the XML atlas file
+tree = ET.parse('/Users/weavejul/fsl/data/atlases/HarvardOxford-Subcortical.xml')
+root = tree.getroot()
+
+# Extract region labels, names, and their coordinates
+regions = {}
+for label in root.findall('.//label'):
+    index = int(label.get('index'))
+    name = label.text.strip()
+    x, y, z = int(label.get('x')), int(label.get('y')), int(label.get('z'))
+    regions[index] = {'name': name, 'coords': (x, y, z)}
+
+# Print extracted regions and their coordinates for verification
+# for index, coords in regions.items():
+#     print(f'Region: {index}, Coordinates: {coords}')
+    
+# Load your time series data
+timeseries_img = nib.load('/Users/weavejul/Downloads/resized_lrp.nii.gz')
+timeseries_data = timeseries_img.get_fdata()
+
+# Ensure that timeseries_data has the shape (x, y, z, t)
+assert len(timeseries_data.shape) == 4, "The time series data should have 4 dimensions (x, y, z, t)"
+
+# Initialize a dictionary to hold the sum of voxel values over time for each region
+region_sums = {}
+
+for index, data in regions.items():
+    x, y, z = data['coords']
+    # Extract voxel values over time for the current region
+    voxel_time_series = timeseries_data[x, y, z, :]
+    
+    # Sum voxel values over time for the current region
+    voxel_sum_over_time = np.sum(voxel_time_series)
+    
+    # Store the result in the dictionary with the region name
+    region_sums[index] = {'name': data['name'], 'total_value': voxel_sum_over_time}
+
+# Sort the regions by the sum of voxel values
+sorted_regions = sorted(region_sums.items(), key=lambda x: x[1]['total_value'], reverse=True)
+
+# Print sorted regions with names
+for index, data in sorted_regions:
+    print(f"Region: {data['name']}, Total Value: {data['total_value']}")
